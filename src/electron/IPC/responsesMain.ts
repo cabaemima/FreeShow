@@ -186,6 +186,8 @@ export const mainResponses: MainResponses = {
         if (data.cloudOnly) markAsNewSync()
         await ContentProviderRegistry.loadServices(data.providerId, data.cloudOnly || false, data.data)
     },
+    [Main.PROVIDER_CONNECTIONS]: () => ContentProviderRegistry.getConnectedProviders(),
+    [Main.PROVIDER_RELOAD_SHOW]: (data) => ContentProviderRegistry.reloadShow(data.providerId, data.showId, data.data),
     [Main.PROVIDER_DISCONNECT]: (data) => {
         ContentProviderRegistry.disconnect(data.providerId, data.scope)
         return { success: true }

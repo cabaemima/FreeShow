@@ -151,6 +151,8 @@ export enum Main {
     // Provider-based routing
     PROVIDER_LOAD_SERVICES = "PROVIDER_LOAD_SERVICES",
     PROVIDER_DISCONNECT = "PROVIDER_DISCONNECT",
+    PROVIDER_CONNECTIONS = "PROVIDER_CONNECTIONS",
+    PROVIDER_RELOAD_SHOW = "PROVIDER_RELOAD_SHOW",
     PROVIDER_STARTUP_LOAD = "PROVIDER_STARTUP_LOAD",
     PROVIDER_FETCH_FOLDERS = "PROVIDER_FETCH_FOLDERS",
     PCO_LIVE_GET = "PCO_LIVE_GET",
@@ -257,6 +259,7 @@ export interface MainSendPayloads {
     // Provider-based routing
     [Main.PROVIDER_LOAD_SERVICES]: { providerId: ContentProviderId; cloudOnly?: boolean; data?: any }
     [Main.PROVIDER_DISCONNECT]: { providerId: ContentProviderId; scope?: string }
+    [Main.PROVIDER_RELOAD_SHOW]: { providerId: ContentProviderId; showId: string; data?: any }
     [Main.PROVIDER_STARTUP_LOAD]: { providerId: ContentProviderId; scope?: string; data?: any; cloudOnly?: boolean }
     [Main.PROVIDER_FETCH_FOLDERS]: { providerId: ContentProviderId }
     [Main.PCO_LIVE_GET]: { serviceTypeId: string; planId: string }
@@ -362,6 +365,7 @@ export interface MainReturnPayloads {
     [Main.SEND_SOCKET_MESSAGE]: Promise<boolean>
     // Provider-based routing
     [Main.PROVIDER_DISCONNECT]: { success: boolean }
+    [Main.PROVIDER_CONNECTIONS]: { [key in ContentProviderId]?: boolean }
     [Main.PROVIDER_FETCH_FOLDERS]: Promise<PCOFolderTreeNode[]>
     [Main.PCO_FETCH_SERVICE_TREE]: Promise<PCOFolderTreeNode[]>
     [Main.PCO_LIVE_GET]: Promise<{ liveId: string | null; liveChannel: string | null; orgId: string | null; liveStartAt: string | null; liveEndAt: string | null; length: number | null; isPreService: boolean; serviceStartAt: string | null; serviceEndAt: string | null } | null>

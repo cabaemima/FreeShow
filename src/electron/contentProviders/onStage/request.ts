@@ -10,33 +10,12 @@
 
 import { uid } from "uid"
 import { ToMain } from "../../../types/IPC/ToMain"
-import type { Show, Slide, SlideData } from "../../../types/Show"
+import type { Show } from "../../../types/Show"
 import { sendToMain } from "../../IPC/main"
 import { onStageApiRequest, onStageConnect } from "./connect"
+import { getFormatSettings } from "./format"
+import { addSongArrangement, createSongBuild, finalizeSongBuild, type OnStageSong, type SongBuild } from "./songBuilder"
 
-type OnStageSlide = { lines: string[] }
-type OnStageSection = {
-    label: string
-    number: number
-    name: string
-    repeats: number
-    notes: string | null
-    instrumental: boolean
-    unscheduled: boolean
-    slides: OnStageSlide[]
-}
-type OnStageSong = {
-    id: string
-    title: string
-    artist: string | null
-    key: string | null
-    originalKey: string | null
-    tempo: number | null
-    meter: string | null
-    ccli: string | null
-    copyright: string | null
-    sections: OnStageSection[]
-}
 type OnStageServiceItem = {
     type: "song" | "moment"
     name: string | null
@@ -47,14 +26,12 @@ type OnStageServiceItem = {
 }
 type OnStageServiceOverview = { id: string; name: string | null; dateTime: string; location: string | null; itemCount: number; updatedAt: string | null }
 // The wire shape PROVIDER_PROJECTS expects — the frontend handler builds the real Project from it.
-type ProviderProjectItem = { type: "show" | "section"; id: string; scheduleLength: number; name?: string; notes?: string }
+type ProviderProjectItem = { type: "show" | "section"; id: string; scheduleLength: number; layout?: string; name?: string; notes?: string }
 type ProviderProject = { id: string; name: string; scheduledTo: number; created: number; folderId: string; folderName: string; items: ProviderProjectItem[] }
 type OnStageServiceDetail = { id: string; name: string | null; dateTime: string; location: string | null; updatedAt: string | null; items: OnStageServiceItem[] }
 
-const itemStyle = "left:50px;top:120px;width:1820px;height:840px;"
-// Repeated sections are expressed as repeated layout references to one slide. Legacy imports have
-// carried absurd counts (a real song arrived with reps 104), so occurrences are capped.
-const MAX_REPEAT_OCCURRENCES = 16
+// a song's show id is derived from its OnStage id, so a reload can find its way back
+const SHOW_ID_PREFIX = "onstagesong_"
 
 async function onStageRequest<T>(endpoint: string): Promise<T | null> {
     const access = await onStageConnect("presenter")
@@ -74,31 +51,49 @@ async function onStageRequest<T>(endpoint: string): Promise<T | null> {
     })
 }
 
-export async function onStageLoadServices(): Promise<void> {
-    const list = await onStageRequest<{ services: OnStageServiceOverview[]; hasMore: boolean }>("/services")
-    if (!list?.services?.length) return
+/** Reload one song from OnStage, leaving the schedules and every other song alone. */
+export async function onStageReloadSong(showId: string, providerData?: unknown): Promise<void> {
+    const songId = showId.startsWith(SHOW_ID_PREFIX) ? showId.slice(SHOW_ID_PREFIX.length) : showId
+    if (!songId) return
 
-    sendToMain(ToMain.TOAST, "Getting schedules from OnStage")
+    await onStageLoadServices(providerData, songId)
+}
+
+const RELOAD_NOT_SCHEDULED_MESSAGE = "This song is not scheduled in any OnStage service, so it could not be reloaded"
+
+export async function onStageLoadServices(providerData?: unknown, onlySongId?: string): Promise<void> {
+    const format = getFormatSettings(providerData)
+    const list = await onStageRequest<{ services: OnStageServiceOverview[]; hasMore: boolean }>("/services")
+    if (!list?.services?.length) {
+        if (onlySongId) sendToMain(ToMain.ALERT, RELOAD_NOT_SCHEDULED_MESSAGE)
+        return
+    }
+
+    sendToMain(ToMain.TOAST, onlySongId ? "Reloading song from OnStage" : "Getting schedules from OnStage")
 
     const projects: ProviderProject[] = []
-    const shows: (Show & { id: string })[] = []
-    // A song appearing in several services is one show — render it once per sync.
-    const builtShowIds = new Set<string>()
+    // A song appearing in several services is ONE show holding one arrangement per structure —
+    // each service pins its own arrangement, so a service that plays the song differently no
+    // longer decides the structure for all the others.
+    const songBuilds: { [showId: string]: SongBuild } = {}
 
     for (const overview of list.services) {
         const service = await onStageRequest<OnStageServiceDetail>(`/services/${overview.id}`)
         if (!service?.items?.length) continue
 
+        const serviceName = service.name || service.dateTime.slice(0, 10)
         const projectItems: ProviderProjectItem[] = []
         for (const item of service.items) {
             if (item.type === "song" && item.song) {
-                const showId = `onstagesong_${item.song.id}`
-                if (!builtShowIds.has(showId)) {
-                    builtShowIds.add(showId)
-                    shows.push({ id: showId, ...getShow(item.song) })
-                }
-                projectItems.push({ type: "show", id: showId, scheduleLength: Math.round(item.durationMs / 1000) })
-            } else {
+                // reloading one song still walks every service — that is where its arrangements live
+                if (onlySongId && item.song.id !== onlySongId) continue
+
+                const showId = `${SHOW_ID_PREFIX}${item.song.id}`
+                const build = songBuilds[showId] || (songBuilds[showId] = createSongBuild(item.song))
+                const layoutId = addSongArrangement(build, item.song, format, serviceName)
+
+                projectItems.push({ type: "show", id: showId, layout: layoutId, scheduleLength: Math.round(item.durationMs / 1000) })
+            } else if (!onlySongId) {
                 projectItems.push({
                     type: "section",
                     id: uid(5),
@@ -108,7 +103,8 @@ export async function onStageLoadServices(): Promise<void> {
                 })
             }
         }
-        if (!projectItems.length) continue
+        // a single song reload leaves the schedules untouched
+        if (!projectItems.length || onlySongId) continue
 
         projects.push({
             id: service.id,
@@ -121,76 +117,13 @@ export async function onStageLoadServices(): Promise<void> {
         })
     }
 
-    sendToMain(ToMain.PROVIDER_PROJECTS, { providerId: "onstage", categoryName: "OnStage", shows, projects })
-}
+    const shows: (Show & { id: string })[] = Object.keys(songBuilds).map((showId) => ({ id: showId, ...finalizeSongBuild(songBuilds[showId]) }))
 
-function getShow(song: OnStageSong): Show {
-    const slides: { [key: string]: Slide } = {}
-    const layoutSlides: SlideData[] = []
-    // One slide group per section TYPE: a section played again later in the arrangement is the
-    // same group referenced again by the layout, never a duplicated slide.
-    const parentBySection: { [key: string]: string } = {}
-
-    song.sections.forEach((section) => {
-        const sectionKey = `${section.label} ${section.number}`
-        let parentId = parentBySection[sectionKey]
-
-        if (!parentId) {
-            const sectionSlides: OnStageSlide[] = section.slides.length ? section.slides : [{ lines: [] }]
-            const children: string[] = []
-
-            sectionSlides.forEach((sectionSlide, i) => {
-                const slideId = uid()
-                slides[slideId] = {
-                    // Only the parent carries the group — a labeled child would count as its own group.
-                    group: i === 0 ? section.name : null,
-                    ...(i === 0 ? { globalGroup: section.label.toLowerCase() } : {}),
-                    color: null,
-                    settings: {},
-                    notes: section.notes || "",
-                    items: sectionSlide.lines.length
-                        ? [
-                              {
-                                  style: itemStyle,
-                                  lines: sectionSlide.lines.map((line) => ({ align: "", text: [{ style: "", value: line }] }))
-                              }
-                          ]
-                        : []
-                }
-
-                if (i === 0) parentId = slideId
-                else children.push(slideId)
-            })
-
-            if (children.length && parentId) slides[parentId].children = children
-            parentBySection[sectionKey] = parentId!
-        }
-
-        // A muted (repeats 0) or unscheduled section stays part of the song but out of the
-        // presented layout; an instrumental section is presented as a single empty slide; a
-        // repeated section is referenced by the layout once per play-through.
-        const occurrences = section.unscheduled ? 0 : Math.min(section.repeats, MAX_REPEAT_OCCURRENCES)
-        if (section.repeats > MAX_REPEAT_OCCURRENCES) console.warn(`OnStage: capping section "${section.name}" of "${song.title}" from ${section.repeats} to ${MAX_REPEAT_OCCURRENCES} repeats`)
-        for (let repeat = 0; repeat < occurrences; repeat++) layoutSlides.push({ id: parentId! })
-    })
-
-    const layoutId = uid()
-    return {
-        name: song.title || "",
-        category: "onstage",
-        timestamps: { created: Date.now(), modified: null, used: null },
-        meta: {
-            title: song.title || "",
-            artist: song.artist || "",
-            CCLI: song.ccli || "",
-            copyright: song.copyright || "",
-            key: song.key || ""
-        },
-        settings: { activeLayout: layoutId, template: null },
-        layouts: {
-            [layoutId]: { name: "Default", notes: "", slides: layoutSlides }
-        },
-        slides,
-        media: {}
+    if (onlySongId && !shows.length) {
+        sendToMain(ToMain.ALERT, RELOAD_NOT_SCHEDULED_MESSAGE)
+        return
     }
+
+    // an explicit reload of one song means the OnStage version is wanted — no questions asked
+    sendToMain(ToMain.PROVIDER_PROJECTS, { providerId: "onstage", categoryName: "OnStage", shows, projects, forceReplace: !!onlySongId })
 }

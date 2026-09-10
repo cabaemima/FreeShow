@@ -2,7 +2,7 @@ import type express from "express"
 import { getKey } from "../../utils/keys"
 import { ContentProvider } from "../base/ContentProvider"
 import { ONSTAGE_API_URL, onStageConnect, onStageDisconnect, onStageInitialize, onStageStartupLoad, type OnStageAuthData, type OnStageScopes } from "./connect"
-import { onStageLoadServices } from "./request"
+import { onStageLoadServices, onStageReloadSong } from "./request"
 
 // Re-export types from connect file
 export type { OnStageScopes } from "./connect"
@@ -56,13 +56,19 @@ export class OnStageProvider extends ContentProvider<OnStageScopes, OnStageAuthD
         return null
     }
 
-    async loadServices(): Promise<void> {
-        return onStageLoadServices()
+    // `data` is the user's own OnStage settings (contentProviderData.onstage), forwarded from the
+    // frontend so the live store value is used instead of the last-saved settings file.
+    async loadServices(data?: unknown): Promise<void> {
+        return onStageLoadServices(data)
     }
 
-    async startupLoad(scope: OnStageScopes): Promise<void> {
+    async reloadShow(showId: string, data?: unknown): Promise<void> {
+        return onStageReloadSong(showId, data)
+    }
+
+    async startupLoad(scope: OnStageScopes, data?: unknown): Promise<void> {
         onStageInitialize()
-        return onStageStartupLoad(scope)
+        return onStageStartupLoad(scope, data)
     }
 
     protected handleAuthCallback(_req: express.Request, _res: express.Response): void {

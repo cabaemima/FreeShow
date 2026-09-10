@@ -269,9 +269,9 @@ export function onStageDisconnect(scope: OnStageScopes = "presenter") {
     return { success: true }
 }
 
-export async function onStageStartupLoad(scope: OnStageScopes = "presenter") {
+export async function onStageStartupLoad(scope: OnStageScopes = "presenter", providerData?: unknown) {
     if (!getContentProviderAccess("onstage", scope)) return
-    await onStageLoadServices()
+    await onStageLoadServices(providerData)
 }
 
 function connectionInitialized(isFirstConnection = false): void {

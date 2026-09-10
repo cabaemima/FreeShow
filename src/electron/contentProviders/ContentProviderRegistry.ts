@@ -51,6 +51,23 @@ export class ContentProviderRegistry {
     }
 
     /**
+     * The providers that already hold an access token, so the app knows what is connected before
+     * any sync has run this session.
+     */
+    static getConnectedProviders(): { [key in ContentProviderId]?: boolean } {
+        this.ensureInitialized()
+
+        const connections: { [key in ContentProviderId]?: boolean } = {}
+        this.getAvailableProviders().forEach((providerId) => {
+            const provider = this.getProvider(providerId)
+            const hasAccess = (provider?.supportedScopes || []).some((scope) => !!getContentProviderAccess(providerId, scope))
+            if (hasAccess) connections[providerId] = true
+        })
+
+        return connections
+    }
+
+    /**
      * Connect to a content provider
      */
     static async connect(providerId: ContentProviderId, scope: string): Promise<boolean> {
@@ -87,6 +104,25 @@ export class ContentProviderRegistry {
             provider.disconnect(scope as any)
         } catch (error) {
             console.error(`Failed to disconnect from ${providerId}:`, error)
+        }
+    }
+
+    /**
+     * Reload a single show from a provider, leaving everything else it manages alone
+     */
+    static async reloadShow(providerId: ContentProviderId, showId: string, data?: any): Promise<void> {
+        this.ensureInitialized()
+
+        const provider = this.getProvider(providerId)
+        if (!provider?.reloadShow) {
+            console.error(`Content provider '${providerId}' cannot reload a single show`)
+            return
+        }
+
+        try {
+            await provider.reloadShow(showId, data)
+        } catch (error) {
+            console.error(`Failed to reload show from ${providerId}:`, error)
         }
     }
 
