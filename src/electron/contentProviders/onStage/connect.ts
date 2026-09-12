@@ -19,7 +19,7 @@ import { onStageLoadServices } from "./request"
 // OnStage stores the token pair under one logical scope key; the OAuth request itself asks for the
 // granular read scopes below.
 export type OnStageScopes = "presenter"
-export const ONSTAGE_OAUTH_SCOPES = "events:read songs:read"
+export const ONSTAGE_OAUTH_SCOPES = "events:read songs:read teams:switch"
 
 export type OnStageAuthData = {
     access_token: string
@@ -28,7 +28,43 @@ export type OnStageAuthData = {
     created_at: number
     expires_in: number
     scope: OnStageScopes
+    team_id?: string
+    team_name?: string
 } | null
+
+// One token set per team: switching to an already-authorized team is instant, a new team costs one
+// browser consent. Stored under the same provider/scope key as before; a legacy single-token entry
+// is migrated on first read (its team becomes known at the next token response).
+type OnStageAuthStore = {
+    activeTeamId: string | null
+    byTeam: { [teamId: string]: NonNullable<OnStageAuthData> }
+}
+
+const LEGACY_TEAM_KEY = "unknown"
+
+function loadStore(scope: OnStageScopes): OnStageAuthStore {
+    const stored = getContentProviderAccess("onstage", scope)
+    if (!stored) return { activeTeamId: null, byTeam: {} }
+    if (stored.byTeam) return stored as OnStageAuthStore
+    // legacy single-token shape
+    const teamId = stored.team_id || LEGACY_TEAM_KEY
+    return { activeTeamId: teamId, byTeam: { [teamId]: stored } }
+}
+
+function saveTokens(scope: OnStageScopes, data: NonNullable<OnStageAuthData>): OnStageAuthStore {
+    const store = loadStore(scope)
+    const teamId = data.team_id || LEGACY_TEAM_KEY
+    delete store.byTeam[LEGACY_TEAM_KEY]
+    store.byTeam[teamId] = data
+    store.activeTeamId = teamId
+    setContentProviderAccess("onstage", scope, store)
+    return store
+}
+
+function activeAccess(scope: OnStageScopes): OnStageAuthData {
+    const store = loadStore(scope)
+    return store.activeTeamId ? (store.byTeam[store.activeTeamId] ?? null) : null
+}
 
 export const ONSTAGE_API_URL = process.env.ONSTAGE_API_URL || "https://on-stage.app/api"
 
@@ -94,7 +130,7 @@ const HTML_error = `
     </body>
 `
 
-let ONSTAGE_ACCESS: OnStageAuthData = null
+let announcedThisRun = false
 // Startup auto-sync and a manual connect click can request authorization at the same moment; two
 // flows would each open a browser tab with its own PKCE verifier, and completing one tab exchanges
 // its code against the other flow's verifier. All callers share one in-flight authorization.
@@ -104,13 +140,13 @@ let pendingAuthUrl = ""
 // promise would otherwise stay in-flight forever and every later connect click would be a no-op.
 const AUTH_FLOW_TIMEOUT_MS = 10 * 60 * 1000
 
-function onStageAuthenticate(scope: OnStageScopes): Promise<OnStageAuthData> {
+function onStageAuthenticate(scope: OnStageScopes, teamIdHint?: string): Promise<OnStageAuthData> {
     if (pendingAuthentication) {
         // re-open the same flow (same PKCE verifier) so a closed tab can be recovered by clicking connect again
         if (pendingAuthUrl) openURL(pendingAuthUrl)
         return pendingAuthentication
     }
-    pendingAuthentication = startAuthentication(scope)
+    pendingAuthentication = startAuthentication(scope, teamIdHint)
     pendingAuthentication.finally(() => {
         pendingAuthentication = null
         pendingAuthUrl = ""
@@ -118,7 +154,7 @@ function onStageAuthenticate(scope: OnStageScopes): Promise<OnStageAuthData> {
     return pendingAuthentication
 }
 
-function startAuthentication(scope: OnStageScopes): Promise<OnStageAuthData> {
+function startAuthentication(scope: OnStageScopes, teamIdHint?: string): Promise<OnStageAuthData> {
     const path = "/auth/complete"
     const redirect_uri = `http://localhost:${ONSTAGE_PORT}${path}`
 
@@ -176,15 +212,14 @@ function startAuthentication(scope: OnStageScopes): Promise<OnStageAuthData> {
                 res.setHeader("Content-Type", "text/html")
                 res.send(HTML_success)
 
-                const storedData = { ...data, scope } as OnStageAuthData
-                setContentProviderAccess("onstage", scope, storedData)
-                ONSTAGE_ACCESS = storedData
+                const storedData = { ...data, scope } as NonNullable<OnStageAuthData>
+                saveTokens(scope, storedData)
                 connectionInitialized(true)
                 finish(storedData)
             })
         })
 
-        const URL = `${ONSTAGE_API_URL}/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirect_uri)}&response_type=code&scope=${encodeURIComponent(ONSTAGE_OAUTH_SCOPES)}&code_challenge=${codeChallenge}&code_challenge_method=S256`
+        const URL = `${ONSTAGE_API_URL}/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirect_uri)}&response_type=code&scope=${encodeURIComponent(ONSTAGE_OAUTH_SCOPES)}&code_challenge=${codeChallenge}&code_challenge_method=S256${teamIdHint ? `&team_id=${encodeURIComponent(teamIdHint)}` : ""}`
 
         pendingAuthUrl = URL
         openURL(URL)
@@ -214,8 +249,8 @@ function refreshToken(access: OnStageAuthData): Promise<OnStageAuthData> {
                 return resolve(handleRefreshFailure(access.scope))
             }
 
-            const storedData = { ...data, scope: access.scope } as OnStageAuthData
-            setContentProviderAccess("onstage", access.scope, storedData)
+            const storedData = { ...data, scope: access.scope } as NonNullable<OnStageAuthData>
+            saveTokens(access.scope, storedData)
             return resolve(storedData)
         })
     })
@@ -242,30 +277,65 @@ function generateCodeChallenge(verifier: string) {
 }
 
 export function onStageInitialize() {
-    ONSTAGE_ACCESS = null
+    announcedThisRun = false
 }
 
 export async function onStageConnect(scope: OnStageScopes): Promise<OnStageAuthData> {
-    let accessData = ONSTAGE_ACCESS || getContentProviderAccess("onstage", scope)
+    let accessData = activeAccess(scope)
 
     if (hasExpired(accessData)) accessData = await refreshToken(accessData)
     if (!accessData) accessData = await onStageAuthenticate(scope)
     if (!accessData) return null
 
-    if (!ONSTAGE_ACCESS) connectionInitialized()
-    ONSTAGE_ACCESS = accessData
+    if (!announcedThisRun) {
+        connectionInitialized()
+        announcedThisRun = true
+    }
 
     return accessData
 }
 
-export function onStageDisconnect(scope: OnStageScopes = "presenter") {
-    const access = ONSTAGE_ACCESS || getContentProviderAccess("onstage", scope)
-    if (access?.refresh_token) {
-        // Revoke the grant server-side so the user does not have to clean up from OnStage settings.
-        onStageApiRequest("/oauth/revoke", "POST", {}, { token: access.refresh_token }, () => undefined)
+/**
+ * Instant when the team already has cached tokens. Otherwise the server mints tokens silently —
+ * covered by the teams:switch scope the user consented to at pairing. A browser consent happens
+ * only as the fallback for grants issued before that scope existed.
+ */
+export async function onStageSwitchTeam(teamId: string, scope: OnStageScopes = "presenter"): Promise<{ success: boolean }> {
+    const store = loadStore(scope)
+    if (store.byTeam[teamId]) {
+        store.activeTeamId = teamId
+        setContentProviderAccess("onstage", scope, store)
+        return { success: true }
     }
+
+    const silent = await silentSwitch(teamId, scope)
+    if (silent) return { success: true }
+
+    const auth = await onStageAuthenticate(scope, teamId)
+    return { success: !!auth }
+}
+
+function silentSwitch(teamId: string, scope: OnStageScopes): Promise<boolean> {
+    return new Promise((resolve) => {
+        onStageConnect(scope).then((access) => {
+            if (!access) return resolve(false)
+            onStageApiRequest("/integrations/v1/switch-team", "POST", { Authorization: `Bearer ${access.access_token}` }, { teamId }, (err, data: OnStageAuthData) => {
+                if (err || !data?.access_token) return resolve(false)
+                saveTokens(scope, { ...data, scope } as NonNullable<OnStageAuthData>)
+                resolve(true)
+            })
+        })
+    })
+}
+
+export function onStageDisconnect(scope: OnStageScopes = "presenter") {
+    // Revoke every team's grant server-side so the user does not have to clean up from OnStage settings.
+    const store = loadStore(scope)
+    Object.values(store.byTeam).forEach((access) => {
+        if (access?.refresh_token) onStageApiRequest("/oauth/revoke", "POST", {}, { token: access.refresh_token }, () => undefined)
+    })
     setContentProviderAccess("onstage", scope, null)
-    ONSTAGE_ACCESS = null
+    announcedThisRun = false
     return { success: true }
 }
 

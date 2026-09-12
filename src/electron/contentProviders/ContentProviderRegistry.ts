@@ -204,6 +204,22 @@ export class ContentProviderRegistry {
     }
 
     /**
+     * List the OnStage teams available for switching
+     */
+    static async getOnStageTeams(): Promise<{ id: string; name: string; current: boolean }[]> {
+        this.ensureInitialized()
+        return this.getProvider<OnStageProvider>("onstage")?.getTeams?.() ?? []
+    }
+
+    /**
+     * Switch the active OnStage team (may launch a browser consent for a new team)
+     */
+    static async switchOnStageTeam(teamId: string): Promise<{ success: boolean }> {
+        this.ensureInitialized()
+        return this.getProvider<OnStageProvider>("onstage")?.switchTeam?.(teamId) ?? { success: false }
+    }
+
+    /**
      * Get PCO Live countdown data for a specific plan
      */
     static async getPcoLiveData(serviceTypeId: string, planId: string): Promise<PCOLiveData | null> {

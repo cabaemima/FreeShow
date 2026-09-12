@@ -179,6 +179,32 @@
     // already exists, so they are meaningless — and misleading — while existing songs are skipped
     $: onstageOnlyAddsNew = $contentProviderData.onstage?.syncMode === "new"
 
+    // OnStage team switching: instant for a team with cached tokens, one preselected browser
+    // consent for a new team. The list comes from the connected user's confirmed teams.
+    let onstageTeams: { id: string; name: string; current: boolean }[] = []
+    let onstageTeamsRequested = false
+    $: if ($providerConnections.onstage && !onstageTeamsRequested) {
+        onstageTeamsRequested = true
+        loadOnStageTeams()
+    }
+    $: if (!$providerConnections.onstage) {
+        onstageTeamsRequested = false
+        onstageTeams = []
+    }
+    async function loadOnStageTeams() {
+        onstageTeams = (await requestMain(Main.ONSTAGE_GET_TEAMS)) || []
+    }
+    $: onstageTeamOptions = onstageTeams.map((team) => ({ value: team.id, label: team.name }))
+    $: onstageCurrentTeamId = onstageTeams.find((team) => team.current)?.id || ""
+    async function switchOnStageTeam(teamId: string) {
+        if (!teamId || teamId === onstageCurrentTeamId) return
+        const result = await requestMain(Main.ONSTAGE_SWITCH_TEAM, { teamId })
+        if (result?.success) {
+            syncContentProvider()
+            loadOnStageTeams()
+        }
+    }
+
     $: syncModeOptions = [
         { value: "", label: "Update existing songs too" },
         { value: "new", label: "Only add new songs" }
@@ -393,6 +419,10 @@
     </InputRow>
 
     <MaterialToggleSwitch label="settings.auto_sync_startup" checked={$contentProviderData.onstage?.autoSync !== false} on:change={(e) => updateProvider("onstage", "autoSync", e.detail)} />
+
+    {#if onstageTeams.length > 1}
+        <MaterialDropdown label="Team" options={onstageTeamOptions} value={onstageCurrentTeamId} on:change={(e) => switchOnStageTeam(e.detail)} />
+    {/if}
 
     {#if !onstageOnlyAddsNew}
         <MaterialDropdown label="Song origin" options={providerOriginOptions} value={$contentProviderData.onstage?.songOrigin || ""} on:change={(e) => updateProvider("onstage", "songOrigin", e.detail)} />

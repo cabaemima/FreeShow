@@ -51,6 +51,10 @@ async function onStageRequest<T>(endpoint: string): Promise<T | null> {
     })
 }
 
+export async function onStageGetTeams(): Promise<{ id: string; name: string; current: boolean }[]> {
+    return (await onStageRequest<{ id: string; name: string; current: boolean }[]>("/teams")) || []
+}
+
 /** Reload one song from OnStage, leaving the schedules and every other song alone. */
 export async function onStageReloadSong(showId: string, providerData?: unknown): Promise<void> {
     const songId = showId.startsWith(SHOW_ID_PREFIX) ? showId.slice(SHOW_ID_PREFIX.length) : showId

@@ -1,8 +1,8 @@
 import type express from "express"
 import { getKey } from "../../utils/keys"
 import { ContentProvider } from "../base/ContentProvider"
-import { ONSTAGE_API_URL, onStageConnect, onStageDisconnect, onStageInitialize, onStageStartupLoad, type OnStageAuthData, type OnStageScopes } from "./connect"
-import { onStageLoadServices, onStageReloadSong } from "./request"
+import { ONSTAGE_API_URL, onStageConnect, onStageDisconnect, onStageInitialize, onStageStartupLoad, onStageSwitchTeam, type OnStageAuthData, type OnStageScopes } from "./connect"
+import { onStageGetTeams, onStageLoadServices, onStageReloadSong } from "./request"
 
 // Re-export types from connect file
 export type { OnStageScopes } from "./connect"
@@ -64,6 +64,14 @@ export class OnStageProvider extends ContentProvider<OnStageScopes, OnStageAuthD
 
     async reloadShow(showId: string, data?: unknown): Promise<void> {
         return onStageReloadSong(showId, data)
+    }
+
+    async getTeams(): Promise<{ id: string; name: string; current: boolean }[]> {
+        return onStageGetTeams()
+    }
+
+    async switchTeam(teamId: string): Promise<{ success: boolean }> {
+        return onStageSwitchTeam(teamId)
     }
 
     async startupLoad(scope: OnStageScopes, data?: unknown): Promise<void> {
